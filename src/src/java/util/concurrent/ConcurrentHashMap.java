@@ -2268,15 +2268,20 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     private final Node<K,V>[] initTable() {
         Node<K,V>[] tab; int sc;
         while ((tab = table) == null || tab.length == 0) {
+            // 小于0说明被其他线程改了
             if ((sc = sizeCtl) < 0)
+                // 自旋等待
                 Thread.yield(); // lost initialization race; just spin
+                // CAS 修改 sizeCtl 的值为-1
             else if (U.compareAndSwapInt(this, SIZECTL, sc, -1)) {
                 try {
                     if ((tab = table) == null || tab.length == 0) {
+                        // sc 在初始化的时候用户可能会自定义，如果没有自定义，则是默认的
                         int n = (sc > 0) ? sc : DEFAULT_CAPACITY;
-                        @SuppressWarnings("unchecked")
+                        // 创建数组
                         Node<K,V>[] nt = (Node<K,V>[])new Node<?,?>[n];
                         table = tab = nt;
+                        // sizeCtl 计算后作为扩容的阀值
                         sc = n - (n >>> 2);
                     }
                 } finally {
