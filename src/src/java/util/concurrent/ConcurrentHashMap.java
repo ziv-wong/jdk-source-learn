@@ -2305,37 +2305,68 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      */
     private final void addCount(long x, int check) {
         CounterCell[] as; long b, s;
+        // 这里使用的思想跟LongAdder类是一模一样的（后面会讲）
+        // 把数组的大小存储根据不同的线程存储到不同的段上（也是分段锁的思想）
+        // 并且有一个baseCount，优先更新baseCount，如果失败了再更新不同线程对应的段
+        // 这样可以保证尽量小的减少冲突
+
+        // 先尝试把数量加到baseCount上，如果失败再加到分段的CounterCell上
         if ((as = counterCells) != null ||
-            !U.compareAndSwapLong(this, BASECOUNT, b = baseCount, s = b + x)) {
+                !U.compareAndSwapLong(this, BASECOUNT, b = baseCount, s = b + x)) {
             CounterCell a; long v; int m;
             boolean uncontended = true;
+            // 如果as为空
+            // 或者长度为0
+            // 或者当前线程所在的段为null
+            // 或者在当前线程的段上加数量失败
             if (as == null || (m = as.length - 1) < 0 ||
-                (a = as[ThreadLocalRandom.getProbe() & m]) == null ||
-                !(uncontended =
-                  U.compareAndSwapLong(a, CELLVALUE, v = a.value, v + x))) {
+                    (a = as[ThreadLocalRandom.getProbe() & m]) == null ||
+                    !(uncontended =
+                            U.compareAndSwapLong(a, CELLVALUE, v = a.value, v + x))) {
+                // 强制增加数量（无论如何数量是一定要加上的，并不是简单地自旋）
+                // 不同线程对应不同的段都更新失败了
+                // 说明已经发生冲突了，那么就对counterCells进行扩容
+                // 以减少多个线程hash到同一个段的概率
                 fullAddCount(x, uncontended);
                 return;
             }
             if (check <= 1)
                 return;
+            // 计算元素个数
             s = sumCount();
         }
         if (check >= 0) {
             Node<K,V>[] tab, nt; int n, sc;
+            // 如果元素个数达到了扩容门槛，则进行扩容
+            // 注意，正常情况下sizeCtl存储的是扩容门槛，即容量的0.75倍
             while (s >= (long)(sc = sizeCtl) && (tab = table) != null &&
-                   (n = tab.length) < MAXIMUM_CAPACITY) {
+                    (n = tab.length) < MAXIMUM_CAPACITY) {
+                // rs是扩容时的一个邮戳标识
                 int rs = resizeStamp(n);
                 if (sc < 0) {
+                    // sc<0说明正在扩容中
                     if ((sc >>> RESIZE_STAMP_SHIFT) != rs || sc == rs + 1 ||
-                        sc == rs + MAX_RESIZERS || (nt = nextTable) == null ||
-                        transferIndex <= 0)
+                            sc == rs + MAX_RESIZERS || (nt = nextTable) == null ||
+                            transferIndex <= 0)
+                        // 扩容已经完成了，退出循环
+                        // 正常应该只会触发nextTable==null这个条件，其它条件没看出来何时触发
                         break;
+
+                    // 扩容未完成，则当前线程加入迁移元素中
+                    // 并把扩容线程数加1
                     if (U.compareAndSwapInt(this, SIZECTL, sc, sc + 1))
                         transfer(tab, nt);
                 }
                 else if (U.compareAndSwapInt(this, SIZECTL, sc,
-                                             (rs << RESIZE_STAMP_SHIFT) + 2))
+                        (rs << RESIZE_STAMP_SHIFT) + 2))
+                    // 这里是触发扩容的那个线程进入的地方
+                    // sizeCtl的高16位存储着rs这个扩容邮戳
+                    // sizeCtl的低16位存储着扩容线程数加1，即(1+nThreads)
+                    // 所以官方说的扩容时sizeCtl的值为 -(1+nThreads)是错误的
+
+                    // 进入迁移元素
                     transfer(tab, null);
+                // 重新计算元素个数
                 s = sumCount();
             }
         }
